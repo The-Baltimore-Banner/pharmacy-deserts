@@ -1,0 +1,238 @@
+---
+title: "init"
+format: html
+editor: visual
+---
+
+#IMPORT
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(readr)
+library(lwgeom)
+library(janitor)
+library(lubridate)
+library(sf)
+library(lwgeom)
+library(mapview)
+library(rmapshaper)
+library(tidycensus)
+options(digits=3)
+options(scipen=999)
+'%notin%' <- Negate('%in%')
+census_api_key("insert your api key")
+
+#does a standard group_by and count() with percentage
+grouper <- function(input_df, group_by_column, new_column_name = "n()"){
+  output_df <- input_df %>%
+    group_by(.data[[group_by_column]]) %>%
+    summarise(temp_count = n()) %>%
+    mutate(percent = temp_count/sum(temp_count)*100) %>%
+    arrange(desc(percent)) %>%
+    rename(!!new_column_name := temp_count)
+  return(output_df)
+}
+
+#group/counts every column in input dataframe
+group_count <- function(input_df, group_column_name='n()', state_filter=NA, start_col = 1){
+  column_names <- colnames(input_df)
+  if(!is.na(state_filter)){
+    input_df <- input_df %>%
+      filter(state == state_filter)
+  }
+  for (column in column_names[start_col:length(column_names)]){
+    output <- grouper(input_df, column, group_column_name)
+    print(output)
+  }
+}
+
+grouper_sum <- function(input_df, group_by_column, sum_column, new_column_name = "n()"){
+  output_df <- input_df %>%
+    group_by(.data[[group_by_column]]) %>%
+    summarise(temp_count = sum(.data[[sum_column]])) %>%
+    mutate(percent = temp_count/sum(temp_count)*100) %>%
+    arrange(desc(percent)) %>%
+    rename(!!new_column_name := temp_count)
+  return(output_df)
+  
+}
+
+#lowers case of every character column in a dataframe
+lower_df <- function(input_df){
+  names <- colnames(input_df)
+  output_df <- input_df
+  names <- colnames(output_df)
+  for (name in names){
+    if (is.character(output_df[[name]])){
+      output_df[[name]] <- tolower(output_df[[name]])
+      #print('yes')
+    } else {
+      output_df[[name]] <- output_df[[name]]
+      #print('no')
+    }
+  }
+  return(output_df)
+}
+
+# Function to create a viewport based on another shapefile's centroid
+create_viewport <- function(input_sf, height = 0, width = 0, input_crs = 4326, shift_height = 0, shift_width = 0) {
+  
+  # Calculate the centroid of the input shapefile
+  centroid <- st_centroid(st_union(input_sf))
+  
+  # Extract latitude and longitude from the centroid
+  lat <- st_coordinates(centroid)[1, 2] + shift_height
+  lon <- st_coordinates(centroid)[1, 1] + shift_width
+  
+  # Calculate the extent of the viewport
+  xmin <- lon - (width / 2)
+  xmax <- lon + (width / 2)
+  ymin <- lat - (height / 2)
+  ymax <- lat + (height / 2)
+  
+  # Create a rectangle as an sf object
+  viewport <- st_polygon(list(rbind(c(xmin, ymin),
+                                    c(xmin, ymax),
+                                    c(xmax, ymax),
+                                    c(xmax, ymin),
+                                    c(xmin, ymin))))
+  
+  # Set the CRS of the rectangle
+  viewport <- st_sf(geometry = st_sfc(viewport), crs = st_crs(input_crs))
+  
+  return(viewport)
+  
+}
+
+
+```
+
+```{r}
+
+#import census from black migration analysis
+census_by_neighborhood <- read_csv("data/census_by_neighborhood.csv") %>%
+  filter(county == "Baltimore City") %>%
+  mutate(neighborhood = viz_name) %>%
+  lower_df() %>%
+  select(-viz_name)
+
+#import neighborhoods databse
+neighborhoods <- st_read("data/shapes/neighborhood/neighborhood.shp") %>%
+  st_transform(crs = 4326) %>%
+  clean_names() %>%
+  lower_df() %>%
+  select(name, geometry) %>%
+  rename(neighborhood = name) %>%
+  full_join(census_by_neighborhood)
+
+#import geocode pharmacies and convert to sf
+df_pharmacies <- read_csv("data/allMD_pharms_geocoded.csv") %>%
+  clean_names() %>%
+  lower_df() %>%
+  select(-long) %>%
+  filter(!is.na(lat),
+         !is.na(lng))
+
+#converting to sf
+pharmacies <- df_pharmacies %>%
+  st_as_sf(coords = c("lng", "lat"), crs = 4326)
+
+#read parcels database and st_union to creat sf of blocks
+blocks <- read_sf("data/shapes/real-property-information-04-25-2023.geojson") %>%
+  st_make_valid() %>%
+  group_by(BLOCK) %>%
+  summarise(geometry = st_union(geometry),
+            .groups = "drop") %>%
+  clean_names()
+
+```
+
+#NEIGHBORHOODS BY BLOCK DISTANCE TO CLOSEST PHARMACY
+
+```{r}
+
+#calculate distance between all blocks and all pharmacies
+distances <- st_distance(blocks, pharmacies %>%
+                           st_transform(crs = st_crs(blocks)))
+
+#calculate minimum 
+min_distances <- apply(distances, 1, min)
+
+#join min distance to blocks
+blocks$min_distance_to_pharmacy <- min_distances
+
+#intersect blocsk with neighborhoods because the parcels database has 10 extra neighborhoods for some reason
+blocks_by_neighborhood <- st_intersection(blocks, neighborhoods)
+
+#calculate block distances by neighborhood
+block_distances_by_neighborhoods <- blocks_by_neighborhood %>%
+  st_drop_geometry() %>%
+  #converting to tenths of miles
+  mutate(min_distance_to_pharmacy = min_distance_to_pharmacy/1609) %>%
+  group_by(neighborhood) %>%
+  summarise(average_min_distance = mean(min_distance_to_pharmacy),
+            median_min_distance = median(min_distance_to_pharmacy),
+            max_min_distance = max(min_distance_to_pharmacy)) %>%
+  clean_names() %>%
+  lower_df() %>%
+  full_join(neighborhoods) %>%
+  st_as_sf()
+
+mapview(block_distances_by_neighborhoods, zcol = "max_min_distance") + 
+  mapview(pharmacies)
+
+```
+
+# INTERSECT PHARMACIES WITH NEIGHBORHOODS 
+
+```{r}
+
+#intersect pharmacies with neighborhoods to build count of pharmacies in a neighborhood
+neighborhoods_with_pharmacies <- st_intersection(neighborhoods, pharmacies) %>%
+  #rename(pharmacy = name.1) %>%
+  group_by(name) %>%
+  summarise(pharmacies = n())%>%
+  arrange(desc(pharmacies)) %>%
+  rename(neighborhood = name)
+
+#join both intersections together with census
+neighborhoods_by_pharmacies <- block_distances_by_neighborhoods %>%
+  full_join(neighborhoods_with_pharmacies %>%
+              st_drop_geometry()) %>%
+  full_join(census_by_neighborhood)
+
+
+#remove NAs in pharmacy counts
+neighborhoods_by_pharmacies$pharmacies[is.na(neighborhoods_by_pharmacies$pharmacies)] <- 0
+
+```
+
+#VIZ
+
+```{r}
+
+write_csv(neighborhoods_by_pharmacies %>%
+            st_drop_geometry() %>%
+            mutate(viz_name = str_to_title(neighborhood)) %>%
+            relocate(viz_name, pharmacies)
+          , "data/output/neighborhoods-by-pharmacies.csv")
+
+
+city_pharmacies <- st_intersection(neighborhoods, pharmacies)
+
+viz_df_pharmacies <- df_pharmacies %>%
+  filter(address_1 %in% city_pharmacies$address_1)
+
+write_csv(viz_df_pharmacies, "data/output/pharmacies.csv")
+
+simple_neighborhoods <- neighborhoods %>%
+  ms_simplify(keep = 0.1) %>%
+  select(neighborhood, geometry)
+
+write_sf(simple_neighborhoods, "data/output/simple-neighborhoods.geojson")
+
+```
+

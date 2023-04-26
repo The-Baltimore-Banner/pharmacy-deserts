@@ -1,0 +1,58 @@
+---
+title: "fact-check"
+format: html
+editor: visual
+---
+
+# To run this code, run the init Quarto document first.
+
+"A Baltimore Banner data analysis found majority-Black and majority-minority neighborhoods do have a slight disadvantage in access to pharmacies."
+
+```{r}
+
+blocks_by_neighborhood %>%
+  group_by(x2020_majority_neighborhood_type) %>%
+  summarise(average_min_distance = mean(min_distance_to_pharmacy),
+            median_min_distance = median(min_distance_to_pharmacy),
+            max_min_distance = max(min_distance_to_pharmacy))
+
+```
+
+"The average distance of all city blocks in Baltimore to a pharmacy is about three-tenths of a mile."
+
+```{r}
+
+#calculating tenths of a mile
+mean(blocks_by_neighborhood$min_distance_to_pharmacy)/1609
+
+```
+
+"Blocks in majority-Black and majority-minority neighborhoods were just above average, and majority-white and majority-Hispanic neighborhoods were just below."
+
+```{r}
+
+blocks_by_neighborhood %>%
+  group_by(x2020_majority_neighborhood_type) %>%
+  summarise(average_min_distance = mean(min_distance_to_pharmacy),
+            median_min_distance = median(min_distance_to_pharmacy),
+            max_min_distance = max(min_distance_to_pharmacy))
+
+```
+
+"A slightly higher share of majority Black neighborhoods don't have a pharmacy."
+
+```{r}
+
+neighborhoods_by_pharmacies %>%
+  st_drop_geometry() %>%
+  mutate(has_pharmacy = case_when(
+    pharmacies > 0 ~ TRUE,
+    TRUE ~ FALSE
+  )) %>%
+  group_by(x2020_majority_neighborhood_type, has_pharmacy) %>%
+  count() %>%
+  pivot_wider(values_from = n, names_from = has_pharmacy) %>%
+  clean_names() %>%
+  mutate(perc_without = false/(false+true))
+
+```
